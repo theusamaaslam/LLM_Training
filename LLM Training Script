@@ -1,0 +1,137 @@
+!pip install -q pip3-autoremove
+!pip-autoremove torch torchvision torchaudio -y
+!pip install -q torch torchvision torchaudio xformers --index-url https://download.pytorch.org/whl/cu121
+!pip install -q unsloth
+!pip install -q --upgrade --no-cache-dir transformers datasets
+
+from unsloth import FastLanguageModel
+import torch
+import json
+from datasets import Dataset
+from transformers import TrainingArguments, DataCollatorForSeq2Seq
+from trl import SFTTrainer
+
+# Load your Nayatel support data
+def load_custom_dataset(json_path):
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    return Dataset.from_dict({"conversations": [data]})
+
+# Load your dataset (Ensure file is uploaded to /content/)
+dataset = load_custom_dataset("/content/training_data_nayatel_restricted_detailed.json")
+
+print("Dataset loaded successfully!")
+
+dtype = None  # Auto-detect
+load_in_4bit = True  # Reduce memory usage
+
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name="unsloth/Llama-3.2-3B-Instruct",
+    max_seq_length=2048,
+    dtype=dtype,
+    load_in_4bit=load_in_4bit,
+)
+
+print("Model and tokenizer loaded successfully!")
+
+# Apply LoRA (Low-Rank Adaptation) for efficient fine-tuning
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=16,  # LoRA Rank
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    lora_alpha=16,
+    lora_dropout=0,
+    bias="none",
+    use_gradient_checkpointing="unsloth",
+    random_state=3407,
+    use_rslora=False,
+    loftq_config=None,
+)
+
+print("LoRA fine-tuning applied!")
+
+from unsloth import FastLanguageModel
+import torch
+import json
+from datasets import Dataset
+from transformers import TrainingArguments, DataCollatorForSeq2Seq
+from trl import SFTTrainer
+
+# ... (Your previous code for loading data, model, and applying LoRA) ...
+
+training_args = TrainingArguments(
+    per_device_train_batch_size=2,
+    gradient_accumulation_steps=4,
+    warmup_steps=5,
+    max_steps=100,  # Adjust as needed
+    learning_rate=2e-4,
+    fp16=not torch.cuda.is_bf16_supported(),
+    bf16=torch.cuda.is_bf16_supported(),
+    logging_steps=1,
+    optim="adamw_8bit",
+    weight_decay=0.01,
+    lr_scheduler_type="linear",
+    seed=3407,
+    output_dir="/content/trained_model",
+    report_to="none",
+)
+
+print("Training arguments set up successfully!")
+
+# Create the SFTTrainer instance
+trainer = SFTTrainer(
+    model=model,
+    args=training_args,
+    train_dataset=dataset,
+    dataset_text_field="text",  # Assuming your dataset has a "text" column
+    # ... (Add any other necessary arguments for SFTTrainer) ...
+)
+
+trainer.train()
+print("Training completed!")
+
+# ... (Your code for saving the model) ...
+
+# Save the trained model in a format compatible with Ollama
+model.save_pretrained("/content/lora_model")
+tokenizer.save_pretrained("/content/lora_model")
+
+print("Model saved successfully at /content/lora_model!")
+
+from unsloth import FastLanguageModel
+
+# Load base model
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name="unsloth/Llama-3.2-3B-Instruct",
+    max_seq_length=2048,
+    dtype=None,
+    load_in_4bit=False,  # Use full precision for merging
+)
+
+# Load fine-tuned LoRA adapters
+model.load_adapter("/content/lora_model")
+
+# Merge LoRA into the full model
+model.save_pretrained_merged(
+    "/content/merged_model",
+    tokenizer,
+    save_method="merged_16bit",  # Can be "merged_4bit" for smaller size
+)
+
+print("LoRA adapters merged successfully. Model saved at /content/merged_model")
+
+from unsloth import FastLanguageModel
+
+# Load the merged model
+model, tokenizer = FastLanguageModel.from_pretrained(
+    "/content/merged_model",
+    max_seq_length=2048,
+    dtype=None,
+    load_in_4bit=False,  # Full precision for better quality
+)
+
+# Save in GGUF format for Ollama
+model.save_pretrained_gguf("/content/ollama_model", tokenizer)
+
+print("Model converted to GGUF format and saved at /content/ollama_model")
+
